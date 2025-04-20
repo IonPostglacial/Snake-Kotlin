@@ -1,116 +1,133 @@
 import kotlinx.browser.document
 import kotlinx.browser.window
-import org.w3c.dom.HTMLCanvasElement
-import org.w3c.dom.HTMLElement
+import org.w3c.dom.*
 import org.w3c.dom.events.Event
 import org.w3c.dom.events.KeyboardEvent
-import org.w3c.dom.CanvasRenderingContext2D
 import kotlin.random.Random
 
-private const val CELL_SIZE = 10
-private const val GRID_WIDTH = 40
+private const val CELL_SIZE   = 10
+private const val GRID_WIDTH  = 40
 private const val GRID_HEIGHT = 40
 
-private val COLOR_BACKGROUND = "#000000".toJsString()
-private val COLOR_SNAKE      = "#00ff00".toJsString()
-private val COLOR_APPLE      = "#ff0000".toJsString()
+private const val COLOR_BACKGROUND = "#000000"
+private const val COLOR_SNAKE      = "#00ff00"
+private const val COLOR_APPLE      = "#ff0000"
 
-internal enum class Direction(val dx: Int, val dy: Int) {
-  UP(0, -1),
-  DOWN(0, 1),
-  LEFT(-1, 0),
-  RIGHT(1, 0);
+private const val DIR_RIGHT = 0
+private const val DIR_DOWN  = 1
+private const val DIR_LEFT  = 2
+private const val DIR_UP    = 3
 
-  fun isOppositeOf(other: Direction): Boolean =
-    (dx == -other.dx) && (dy == -other.dy)
+private val DX = listOf(1, 0, -1, 0)
+private val DY = listOf(0, 1,  0, -1)
+
+private fun isOpposite(d1: Int, d2: Int): Boolean =
+  when (d1) {
+    DIR_RIGHT -> d2 == DIR_LEFT
+    DIR_DOWN  -> d2 == DIR_UP
+    DIR_LEFT  -> d2 == DIR_RIGHT
+    DIR_UP    -> d2 == DIR_DOWN
+    else -> false
+  }
+
+private class DirectionsBuffer(val capacity: Int) {
+  private val data = ByteArray((capacity + 3) shr 2) // 4 directions per byte
+
+  fun setAt(index: Int, dirCode: Int) {
+    val byteIndex = index shr 2
+    val shift     = (index and 3) shl 1
+
+    val oldByte = data[byteIndex].toInt() and 0xFF
+    val mask    = (3 shl shift).inv() and 0xFF
+    val newVal  = (oldByte and mask) or (dirCode shl shift)
+    data[byteIndex] = newVal.toByte()
+  }
+
+  fun getAt(index: Int): Int {
+    val byteIndex = index shr 2
+    val shift     = (index and 3) shl 1
+    val b         = data[byteIndex].toInt() and 0xFF
+    return (b shr shift) and 3
+  }
 }
 
-internal class Snake {
-  internal val xs = IntArray(GRID_WIDTH * GRID_HEIGHT)
-  internal val ys = IntArray(GRID_WIDTH * GRID_HEIGHT)
+private class Snake {
+  val directions = DirectionsBuffer(GRID_WIDTH * GRID_HEIGHT)
 
-  internal var length: Int = 0
-  private var head: Int = 0
-  private var direction = Direction.RIGHT
+  var length = 4
+    private set
 
-  internal var appleX: Int = 0
-  internal var appleY: Int = 0
+  private var headIndex = length - 2
+  var tailIndex = 0
+  private var directionCode = DIR_RIGHT
 
-  internal var stepPeriod: Double = 300.0
-  internal var score: Int = 0
-  private var nextReward: Int = 10
+  var headX = 3
+  var headY = 0
 
-  fun init() {
-    score = 0
-    stepPeriod = 300.0
-    nextReward = 10
+  var tailX = 0
+  var tailY = 0
 
+  var appleX = 0
+  var appleY = 0
+
+  var stepPeriod = 300.0
+  var score = 0
+  private var nextReward = 10
+
+  init {
     teleportApple()
-
-    length = 4
-    head = 3
-    direction = Direction.RIGHT
-    xs[0] = 0; ys[0] = 0
-    xs[1] = 1; ys[1] = 0
-    xs[2] = 2; ys[2] = 0
-    xs[3] = 3; ys[3] = 0
   }
 
-  fun snakeWillEatApple(): Boolean {
-    val hx = xs[head]
-    val hy = ys[head]
-    return ((hx + direction.dx) == appleX && (hy + direction.dy) == appleY)
+  private fun moveIndexForward(idx: Int): Int =
+    if (idx + 1 == directions.capacity) 0 else (idx + 1)
+
+  fun willEatApple(): Boolean {
+    val nx = headX + DX[directionCode]
+    val ny = headY + DY[directionCode]
+    return (nx == appleX && ny == appleY)
   }
 
-  fun snakeEatsItself(): Boolean {
-    for (i in 0 until length) {
-      if (i == head) continue
-      if (xs[head] == xs[i] && ys[head] == ys[i]) return true
+  fun isOutOfBounds(): Boolean =
+    headX < 0 || headX >= GRID_WIDTH || headY < 0 || headY >= GRID_HEIGHT
+
+  fun eatsItself(): Boolean {
+    var cx = tailX
+    var cy = tailY
+    var idx = tailIndex
+
+    repeat(length - 1) {
+      if (cx == headX && cy == headY) return true
+      val code = directions.getAt(idx)
+      idx = moveIndexForward(idx)
+      cx += DX[code]
+      cy += DY[code]
     }
     return false
   }
 
-  fun snakeIsOutOfBounds(): Boolean {
-    val hx = xs[head]
-    val hy = ys[head]
-    return hx < 0 || hx >= GRID_WIDTH || hy < 0 || hy >= GRID_HEIGHT
-  }
+  private fun doMove(isGrowing: Boolean) {
+    headIndex = moveIndexForward(headIndex)
+    directions.setAt(headIndex, directionCode)
 
-  fun snakeMoveAhead() {
-    val hx = xs[head]
-    val hy = ys[head]
-    val nextX = hx + direction.dx
-    val nextY = hy + direction.dy
+    headX += DX[directionCode]
+    headY += DY[directionCode]
 
-    head = if (head == length - 1) 0 else head + 1
-    xs[head] = nextX
-    ys[head] = nextY
-  }
-
-  fun snakeGrow() {
-    val hx = xs[head]
-    val hy = ys[head]
-    val nextX = hx + direction.dx
-    val nextY = hy + direction.dy
-
-    if (head == length - 1) {
-      xs[length] = nextX
-      ys[length] = nextY
+    if (!isGrowing) {
+      val tailCode = directions.getAt(tailIndex)
+      tailX += DX[tailCode]
+      tailY += DY[tailCode]
+      tailIndex = moveIndexForward(tailIndex)
     } else {
-      for (i in length downTo (head + 1)) {
-        xs[i] = xs[i - 1]
-        ys[i] = ys[i - 1]
-      }
-      xs[head + 1] = nextX
-      ys[head + 1] = nextY
+      length++
     }
-    length++
-    head++
   }
 
-  fun changeSnakeDirection(d: Direction) {
-    if (!direction.isOppositeOf(d)) {
-      direction = d
+  fun moveAhead() = doMove(isGrowing = false)
+  fun grow()       = doMove(isGrowing = true)
+
+  fun changeDirection(newCode: Int) {
+    if (!isOpposite(directionCode, newCode)) {
+      directionCode = newCode
     }
   }
 
@@ -131,67 +148,99 @@ internal class Snake {
   }
 }
 
-private fun paintBackground(cx: CanvasRenderingContext2D) {
-  cx.fillStyle = COLOR_BACKGROUND
-  cx.fillRect(
-    0.0, 0.0,
-    (GRID_WIDTH * CELL_SIZE).toDouble(),
-    (GRID_HEIGHT * CELL_SIZE).toDouble()
+private fun paintBackground(ctx: CanvasRenderingContext2D) {
+  ctx.fillStyle = COLOR_BACKGROUND.toJsString()
+  ctx.fillRect(
+    x = .0,
+    y = .0,
+    w = (GRID_WIDTH * CELL_SIZE).toDouble(),
+    h = (GRID_HEIGHT * CELL_SIZE).toDouble()
   )
 }
 
-private fun paintSnake(cx: CanvasRenderingContext2D, snake: Snake) {
-  cx.fillStyle = COLOR_SNAKE
-  for (i in 0 until snake.length) {
-    cx.fillRect(
-      (snake.xs[i] * CELL_SIZE).toDouble(),
-      (snake.ys[i] * CELL_SIZE).toDouble(),
+private fun paintSnake(ctx: CanvasRenderingContext2D, snake: Snake) {
+  ctx.fillStyle = COLOR_SNAKE.toJsString()
+
+  var cx = snake.tailX
+  var cy = snake.tailY
+  var idx = snake.tailIndex
+  repeat(snake.length) { i ->
+    ctx.fillRect(
+      (cx * CELL_SIZE).toDouble(),
+      (cy * CELL_SIZE).toDouble(),
       CELL_SIZE.toDouble(),
       CELL_SIZE.toDouble()
     )
+    if (i < snake.length - 1) {
+      val code = snake.directions.getAt(idx)
+      idx = (if (idx + 1 == snake.directions.capacity) 0 else (idx + 1))
+      cx += DX[code]
+      cy += DY[code]
+    }
   }
 }
 
-private fun paintApple(cx: CanvasRenderingContext2D, snake: Snake) {
-  cx.fillStyle = COLOR_APPLE
-  cx.fillRect(
-    (snake.appleX * CELL_SIZE).toDouble(),
-    (snake.appleY * CELL_SIZE).toDouble(),
-    CELL_SIZE.toDouble(),
-    CELL_SIZE.toDouble()
+private fun paintApple(ctx: CanvasRenderingContext2D, snake: Snake) {
+  ctx.fillStyle = COLOR_APPLE.toJsString()
+  ctx.fillRect(
+    x = (snake.appleX * CELL_SIZE).toDouble(),
+    y = (snake.appleY * CELL_SIZE).toDouble(),
+    w = CELL_SIZE.toDouble(),
+    h = CELL_SIZE.toDouble()
   )
 }
 
-private fun repaint(cx: CanvasRenderingContext2D, snake: Snake) {
-  paintBackground(cx)
-  paintSnake(cx, snake)
-  paintApple(cx, snake)
-  cx.fill()
+private fun repaint(ctx: CanvasRenderingContext2D, snake: Snake, gameOver: Boolean) {
+  paintBackground(ctx)
+  if (gameOver) {
+    ctx.fillStyle = "red".toJsString()
+    ctx.font = "bold 24px monospace"
+    ctx.textAlign = CanvasTextAlign.CENTER
+    val centerX = (GRID_WIDTH * CELL_SIZE) / 2.0
+    val centerY = (GRID_HEIGHT * CELL_SIZE) / 2.0
+    ctx.fillText("OH NO, GAME OVER :(", centerX, centerY)
+  } else {
+    paintSnake(ctx, snake)
+    paintApple(ctx, snake)
+  }
 }
 
 fun main() {
   val canvas = document.querySelector("#gamescreen") as? HTMLCanvasElement
-    ?: error("Cannot find #gamescreen")
-  val cx = canvas.getContext("2d") as? CanvasRenderingContext2D
-    ?: error("Cannot get 2D context")
-
-  canvas.width = GRID_WIDTH * CELL_SIZE
+  if (canvas == null) {
+    window.alert("Cannot find #gamescreen")
+    return
+  }
+  canvas.width  = GRID_WIDTH * CELL_SIZE
   canvas.height = GRID_HEIGHT * CELL_SIZE
 
-  val scoreDisplay = document.querySelector("#score") as? HTMLElement
+  val ctx = canvas.getContext("2d") as? CanvasRenderingContext2D
+  if (ctx == null) {
+    window.alert("Cannot get 2D context")
+    return
+  }
 
-  val snake = Snake().apply { init() }
+  val scoreElement = document.querySelector("#score") as? HTMLElement
+
+  var gameOver = false
+  var snake = Snake()
 
   fun handleKeyDown(event: Event) {
-    event.stopPropagation()
-    val e = event as KeyboardEvent
+    event.preventDefault()
+    val e = event.unsafeCast<KeyboardEvent>()
+    if (gameOver) {
+      snake = Snake()
+      gameOver = false
+    }
     when (e.code) {
-      "ArrowUp"    -> snake.changeSnakeDirection(Direction.UP)
-      "ArrowDown"  -> snake.changeSnakeDirection(Direction.DOWN)
-      "ArrowLeft"  -> snake.changeSnakeDirection(Direction.LEFT)
-      "ArrowRight" -> snake.changeSnakeDirection(Direction.RIGHT)
+      "ArrowRight" -> snake.changeDirection(DIR_RIGHT)
+      "ArrowDown"  -> snake.changeDirection(DIR_DOWN)
+      "ArrowLeft"  -> snake.changeDirection(DIR_LEFT)
+      "ArrowUp"    -> snake.changeDirection(DIR_UP)
     }
   }
+
+  window.addEventListener("keydown", ::handleKeyDown)
 
   var lastUpdateTimestamp = -1.0
   fun step(timestamp: Double) {
@@ -203,29 +252,24 @@ fun main() {
     if (progress >= snake.stepPeriod) {
       lastUpdateTimestamp = timestamp
 
-      if (snake.snakeWillEatApple()) {
-        snake.snakeGrow()
+      if (snake.willEatApple()) {
+        snake.grow()
         snake.teleportApple()
         snake.speedUpGame()
         snake.updateScore()
-        scoreDisplay?.innerText = snake.score.toString()
+        scoreElement?.innerText = snake.score.toString()
       } else {
-        snake.snakeMoveAhead()
+        snake.moveAhead()
       }
 
-      if (snake.snakeIsOutOfBounds() || snake.snakeEatsItself()) {
-        window.alert("Game Over!")
-        window.location.reload()
-        return
+      if (snake.isOutOfBounds() || snake.eatsItself()) {
+        gameOver = true
       }
-      repaint(cx, snake)
+      repaint(ctx, snake, gameOver)
     }
-
     window.requestAnimationFrame(::step)
   }
 
-  window.addEventListener("keydown", ::handleKeyDown)
-
-  repaint(cx, snake)
+  repaint(ctx, snake, gameOver)
   window.requestAnimationFrame(::step)
 }
